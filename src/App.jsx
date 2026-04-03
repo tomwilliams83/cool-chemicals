@@ -3,7 +3,6 @@ import compoundData from "../public/compounds.json";
 
 const { compounds, compatibility } = compoundData;
 
-// Each element has row/col matching the real periodic table grid (18 columns)
 const ELEMENTS = [
   { symbol: "H",  name: "Hydrogen",   atomicNumber: 1,  atomicMass: 1.008,  reactivity: 7, rarity: 1, outerElectrons: 1, group: "nonmetal",      row: 1, col: 1  },
   { symbol: "He", name: "Helium",     atomicNumber: 2,  atomicMass: 4.003,  reactivity: 1, rarity: 2, outerElectrons: 2, group: "noble",          row: 1, col: 18 },
@@ -65,6 +64,8 @@ const GROUP_COLORS = {
 
 const RARITY_LABELS = ["","Common","Common","Uncommon","Uncommon","Rare","Rare","Epic","Epic","Legendary"];
 
+// --- Core logic ---
+
 function findCompound(selection) {
   const selCount = {};
   selection.forEach(s => { selCount[s] = (selCount[s] || 0) + 1; });
@@ -87,6 +88,95 @@ function getValidNextElements(selection) {
   syms.forEach(s => valid.add(s));
   return valid;
 }
+
+// Generate a smart clue based on what the user has selected
+function generateClue(selection) {
+  const selCount = {};
+  selection.forEach(s => { selCount[s] = (selCount[s] || 0) + 1; });
+  const selTypes = Object.keys(selCount).sort();
+
+  // 1. Check if same element types match a compound but counts are wrong
+  const sameTypeMatches = compounds.filter(c => {
+    const cKeys = Object.keys(c.elements).sort();
+    return cKeys.length === selTypes.length && selTypes.every(k => cKeys.includes(k));
+  });
+
+  if (sameTypeMatches.length > 0) {
+    // Find which match is closest
+    const closest = sameTypeMatches[0];
+    const hints = [];
+    selTypes.forEach(sym => {
+      const have = selCount[sym];
+      const need = closest.elements[sym];
+      if (have < need) hints.push(`more ${sym} (need ${need}, have ${have})`);
+      if (have > need) hints.push(`less ${sym} (need ${need}, have ${have})`);
+    });
+    if (hints.length === 0) return null; // exact match — shouldn't happen here
+    return {
+      type: "ratio",
+      message: `You've got the right elements! Try adjusting the amounts — ${hints.join(" and ")}.`,
+      compound: closest.commonName,
+    };
+  }
+
+  // 2. Check if current selection is a subset of any compound (missing elements)
+  const subsetMatches = compounds.filter(c => {
+    const cKeys = Object.keys(c.elements);
+    // Every selected type must be in the compound
+    return selTypes.every(k => cKeys.includes(k)) && cKeys.length > selTypes.length;
+  });
+
+  if (subsetMatches.length > 0) {
+    // Find missing elements across all subset matches
+    const missingElements = {};
+    subsetMatches.slice(0, 3).forEach(c => {
+      Object.keys(c.elements).forEach(sym => {
+        if (!selTypes.includes(sym)) {
+          missingElements[sym] = (missingElements[sym] || 0) + 1;
+        }
+      });
+    });
+    const topMissing = Object.entries(missingElements)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(([sym]) => sym);
+
+    const el = ELEMENTS.find(e => e.symbol === topMissing[0]);
+    const elName = el ? el.name : topMissing[0];
+    const extra = topMissing[1] ? ` or ${topMissing[1]}` : "";
+    return {
+      type: "missing",
+      message: `Interesting combination! Try adding ${elName}${extra} to complete a compound.`,
+      suggest: topMissing,
+    };
+  }
+
+  // 3. Check if any single selected element commonly makes things with a helpful partner
+  if (selTypes.length === 1) {
+    const sym = selTypes[0];
+    const partners = (compatibility[sym] || []).slice(0, 3);
+    if (partners.length > 0) {
+      const partnerNames = partners.map(p => {
+        const e = ELEMENTS.find(el => el.symbol === p);
+        return e ? `${e.name} (${p})` : p;
+      });
+      return {
+        type: "partner",
+        message: `${sym} commonly combines with: ${partnerNames.join(", ")}. Try adding one!`,
+        suggest: partners,
+      };
+    }
+  }
+
+  // 4. Generic fallback
+  return {
+    type: "generic",
+    message: "No compound found for this combination. Try removing an element and adding a different one.",
+    suggest: [],
+  };
+}
+
+// --- UI Components ---
 
 function StatBar({ value, max, color }) {
   return (
@@ -124,8 +214,34 @@ function BeakerAnimation({ animationType, isAnimating }) {
   );
 }
 
+function ClueBox({ clue }) {
+  const icons = { ratio: "⚖️", missing: "🧩", partner: "🔗", generic: "🤔" };
+  return (
+    <div style={{
+      marginTop: 8,
+      background: "rgba(84,160,255,0.12)",
+      border: "1px solid rgba(84,160,255,0.35)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      animation: "shake 0.3s ease",
+    }}>
+      <div style={{ fontSize: 10, color: "#FF6B6B", fontWeight: 700, marginBottom: 5, letterSpacing: 0.5 }}>
+        ✗ No compound found
+      </div>
+      <div style={{ fontSize: 9, color: "#54A0FF", lineHeight: 1.6 }}>
+        {icons[clue.type]} {clue.message}
+      </div>
+    </div>
+  );
+}
+
 function ResultCard({ result, onClose }) {
-  const dc = {safe:{bg:"#1DD1A1",icon:"✅",label:"Safe Compound"},warning:{bg:"#FF9F43",icon:"⚠️",label:"Handle with Care!"},danger:{bg:"#FF6B6B",icon:"💀",label:"DO NOT MAKE THIS!"}}[result.dangerLevel] || {bg:"#1DD1A1",icon:"✅",label:"Safe"};
+  const dc = {
+    safe:    { bg:"#1DD1A1", icon:"✅", label:"Safe Compound"      },
+    warning: { bg:"#FF9F43", icon:"⚠️", label:"Handle with Care!" },
+    danger:  { bg:"#FF6B6B", icon:"💀", label:"DO NOT MAKE THIS!" },
+  }[result.dangerLevel] || { bg:"#1DD1A1", icon:"✅", label:"Safe" };
+
   return (
     <div style={{background:"linear-gradient(145deg,#1a1a3e,#16213e)",border:`3px solid ${dc.bg}`,borderRadius:16,padding:20,fontFamily:"'Orbitron',monospace",color:"#fff",maxWidth:320,boxShadow:`0 0 40px ${dc.bg}66`,animation:"slideIn 0.4s cubic-bezier(0.175,0.885,0.32,1.275)"}}>
       <div style={{background:dc.bg,borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:11,fontWeight:700,letterSpacing:1,display:"flex",alignItems:"center",gap:6}}>
@@ -139,7 +255,12 @@ function ResultCard({ result, onClose }) {
       <div style={{fontSize:22,fontWeight:900,marginBottom:4,color:dc.bg}}>{result.commonName}</div>
       <div style={{fontSize:10,opacity:0.6,marginBottom:16,letterSpacing:1}}>{result.formula}</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
-        {[{label:"💥 Explosive Power",value:result.explosivePower,max:10,color:"#FF6B6B"},{label:"☠️ Toxicity",value:result.toxicity,max:10,color:"#FF9F43"},{label:"🌡️ Boiling Pt °C",value:result.boilingPoint,max:4000,color:"#48DBFB"},{label:"⭐ Coolness",value:result.coolnessFactor,max:10,color:"#FFD700"}].map(s=>(
+        {[
+          {label:"💥 Explosive Power",value:result.explosivePower,max:10,color:"#FF6B6B"},
+          {label:"☠️ Toxicity",value:result.toxicity,max:10,color:"#FF9F43"},
+          {label:"🌡️ Boiling Pt °C",value:result.boilingPoint,max:4000,color:"#48DBFB"},
+          {label:"⭐ Coolness",value:result.coolnessFactor,max:10,color:"#FFD700"},
+        ].map(s=>(
           <div key={s.label} style={{background:"rgba(255,255,255,0.06)",borderRadius:8,padding:"8px 10px"}}>
             <div style={{fontSize:8,opacity:0.7,marginBottom:4}}>{s.label}</div>
             <div style={{fontSize:16,fontWeight:700,color:s.color,marginBottom:4}}>{s.value}</div>
@@ -151,7 +272,8 @@ function ResultCard({ result, onClose }) {
       <div style={{background:"rgba(255,255,255,0.05)",borderRadius:8,padding:"10px 12px",fontSize:10,lineHeight:1.6,borderLeft:`3px solid ${dc.bg}`}}>
         <span style={{opacity:0.6,letterSpacing:1}}>FUN FACT: </span>{result.funFact}
       </div>
-      <button onClick={onClose} style={{marginTop:14,width:"100%",padding:"10px",background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,color:"#fff",fontFamily:"'Orbitron',monospace",fontSize:10,letterSpacing:1,cursor:"pointer"}}
+      <button onClick={onClose}
+        style={{marginTop:14,width:"100%",padding:"10px",background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,color:"#fff",fontFamily:"'Orbitron',monospace",fontSize:10,letterSpacing:1,cursor:"pointer"}}
         onMouseOver={e=>e.target.style.background="rgba(255,255,255,0.2)"}
         onMouseOut={e=>e.target.style.background="rgba(255,255,255,0.1)"}>
         🧪 MIX AGAIN
@@ -160,31 +282,32 @@ function ResultCard({ result, onClose }) {
   );
 }
 
-export default function App() {
-  const [selection, setSelection] = useState([]);
-  const [result, setResult]       = useState(null);
-  const [isAnimating, setIsAnimating] = useState(false);
-  const [animType, setAnimType]   = useState("fizz");
-  const [hoveredEl, setHoveredEl] = useState(null);
-  const [noMatch, setNoMatch]     = useState(false);
+// --- Main App ---
 
-  const validNext = getValidNextElements(selection);
+export default function App() {
+  const [selection, setSelection]     = useState([]);
+  const [result, setResult]           = useState(null);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const [animType, setAnimType]       = useState("fizz");
+  const [hoveredEl, setHoveredEl]     = useState(null);
+  const [clue, setClue]               = useState(null);
+
+  const validNext      = getValidNextElements(selection);
   const selectedSymbols = [...new Set(selection)];
-  const countOf = sym => selection.filter(s => s === sym).length;
+  const countOf        = sym => selection.filter(s => s === sym).length;
 
   const addEl = (el) => {
     if (result || selection.length >= 6) return;
     setSelection(p => [...p, el.symbol]);
-    setNoMatch(false);
+    setClue(null);
   };
 
   const removeOne = (sym) => {
     if (result) return;
     const arr = [...selection];
-    const idx = arr.lastIndexOf(sym);
-    if (idx !== -1) arr.splice(idx, 1);
+    arr.splice(arr.lastIndexOf(sym), 1);
     setSelection(arr);
-    setNoMatch(false);
+    setClue(null);
   };
 
   const combine = () => {
@@ -193,31 +316,31 @@ export default function App() {
     if (match) {
       setAnimType(match.animationType || "fizz");
       setIsAnimating(true);
-      setNoMatch(false);
+      setClue(null);
       setTimeout(() => setResult(match), 1400);
     } else {
-      setNoMatch(true);
+      setClue(generateClue(selection));
     }
   };
 
-  const reset = () => { setResult(null); setSelection([]); setIsAnimating(false); setNoMatch(false); };
+  const reset = () => {
+    setResult(null); setSelection([]); setIsAnimating(false); setClue(null);
+  };
 
-  // Build a map for quick lookup: "row-col" -> element
+  // Build position lookup
   const elementByPos = {};
   ELEMENTS.forEach(el => { elementByPos[`${el.row}-${el.col}`] = el; });
-
-  const ROWS = 7;
-  const COLS = 18;
+  const ROWS = 7, COLS = 18;
 
   return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0f0c29,#302b63,#24243e)",fontFamily:"'Orbitron',monospace",padding:"20px 16px",color:"#fff"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
-        @keyframes bubble { 0%{transform:translateY(0) scale(1);opacity:0.7} 100%{transform:translateY(-60px) scale(0.3);opacity:0} }
-        @keyframes slideIn{ from{opacity:0;transform:scale(0.8) translateY(20px)} to{opacity:1;transform:scale(1) translateY(0)} }
-        @keyframes pulse  { 0%,100%{box-shadow:0 0 20px rgba(255,215,0,0.4)} 50%{box-shadow:0 0 40px rgba(255,215,0,0.8)} }
-        @keyframes float  { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
-        @keyframes shake  { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
+        @keyframes bubble  { 0%{transform:translateY(0) scale(1);opacity:0.7} 100%{transform:translateY(-60px) scale(0.3);opacity:0} }
+        @keyframes slideIn { from{opacity:0;transform:scale(0.8) translateY(20px)} to{opacity:1;transform:scale(1) translateY(0)} }
+        @keyframes pulse   { 0%,100%{box-shadow:0 0 20px rgba(255,215,0,0.4)} 50%{box-shadow:0 0 40px rgba(255,215,0,0.8)} }
+        @keyframes float   { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
+        @keyframes shake   { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
       `}</style>
 
       {/* Header */}
@@ -231,9 +354,8 @@ export default function App() {
 
       <div style={{display:"flex",gap:16,maxWidth:1100,margin:"0 auto",alignItems:"flex-start",flexWrap:"wrap"}}>
 
-        {/* LEFT: Periodic table grid */}
+        {/* LEFT: Table */}
         <div style={{flex:"1 1 600px"}}>
-
           {/* Legend */}
           <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
             {Object.entries(GROUP_COLORS).map(([key,v])=>(
@@ -244,75 +366,27 @@ export default function App() {
             ))}
           </div>
 
-          {/* CSS Grid periodic table */}
-          <div style={{
-            display:"grid",
-            gridTemplateColumns:`repeat(${COLS}, 1fr)`,
-            gridTemplateRows:`repeat(${ROWS}, 1fr)`,
-            gap:3,
-            background:"rgba(255,255,255,0.03)",
-            borderRadius:12,
-            padding:10,
-            border:"1px solid rgba(255,255,255,0.08)",
-          }}>
-            {Array.from({length: ROWS}, (_, rowIdx) =>
-              Array.from({length: COLS}, (_, colIdx) => {
-                const row = rowIdx + 1;
-                const col = colIdx + 1;
-                const el  = elementByPos[`${row}-${col}`];
-                const key = `${row}-${col}`;
-
-                if (!el) {
-                  return <div key={key} style={{aspectRatio:"1",minWidth:0}}/>;
-                }
-
-                const colors   = GROUP_COLORS[el.group] || GROUP_COLORS.metal;
-                const cnt      = countOf(el.symbol);
-                const isSelected = cnt > 0;
-                const isValid    = validNext.has(el.symbol);
-                const disabled   = !isValid || selection.length >= 6 || !!result;
-
+          {/* CSS Grid table */}
+          <div style={{display:"grid",gridTemplateColumns:`repeat(${COLS},1fr)`,gridTemplateRows:`repeat(${ROWS},1fr)`,gap:3,background:"rgba(255,255,255,0.03)",borderRadius:12,padding:10,border:"1px solid rgba(255,255,255,0.08)"}}>
+            {Array.from({length:ROWS},(_,ri)=>
+              Array.from({length:COLS},(_,ci)=>{
+                const row=ri+1, col=ci+1;
+                const el=elementByPos[`${row}-${col}`];
+                if (!el) return <div key={`${row}-${col}`} style={{aspectRatio:"1",minWidth:0}}/>;
+                const colors=GROUP_COLORS[el.group]||GROUP_COLORS.metal;
+                const cnt=countOf(el.symbol);
+                const isSelected=cnt>0;
+                const isValid=validNext.has(el.symbol);
+                const disabled=!isValid||selection.length>=6||!!result;
                 return (
-                  <div key={key}
-                    onClick={()=>!disabled && addEl(el)}
+                  <div key={`${row}-${col}`}
+                    onClick={()=>!disabled&&addEl(el)}
                     onMouseEnter={()=>setHoveredEl(el)}
                     onMouseLeave={()=>setHoveredEl(null)}
-                    style={{
-                      aspectRatio:"1",
-                      minWidth:0,
-                      background: isSelected
-                        ? `linear-gradient(145deg,${colors.bg},${colors.bg}cc)`
-                        : disabled
-                        ? "rgba(255,255,255,0.03)"
-                        : `linear-gradient(145deg,${colors.bg}55,${colors.bg}22)`,
-                      border: isSelected
-                        ? "2px solid #FFD700"
-                        : disabled
-                        ? "1px solid rgba(255,255,255,0.06)"
-                        : `1px solid ${colors.bg}88`,
-                      borderRadius:5,
-                      cursor: disabled ? "not-allowed" : "pointer",
-                      display:"flex", flexDirection:"column",
-                      alignItems:"center", justifyContent:"center",
-                      transition:"all 0.15s ease",
-                      opacity: disabled && !isSelected ? 0.2 : 1,
-                      transform: isSelected ? "scale(1.08) translateY(-2px)" : "scale(1)",
-                      boxShadow: isSelected ? `0 3px 12px ${colors.bg}99` : "none",
-                      position:"relative",
-                      overflow:"hidden",
-                    }}
-                  >
-                    {cnt > 0 && (
-                      <div style={{position:"absolute",top:1,right:2,fontSize:"clamp(5px,0.6vw,8px)",fontWeight:900,color:"#FFD700",lineHeight:1}}>
-                        ×{cnt}
-                      </div>
-                    )}
-                    <div style={{fontSize:"clamp(7px,1vw,11px)",fontWeight:900,lineHeight:1,color:isSelected?colors.text:disabled?"rgba(255,255,255,0.25)":"#fff"}}>
-                      {el.symbol}
-                    </div>
-                    <div style={{fontSize:"clamp(4px,0.5vw,7px)",opacity:0.7,textAlign:"center",lineHeight:1.1,color:isSelected?colors.text:disabled?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.7)",overflow:"hidden",maxWidth:"100%"}}>
-                      {el.name}
-                    </div>
+                    style={{aspectRatio:"1",minWidth:0,background:isSelected?`linear-gradient(145deg,${colors.bg},${colors.bg}cc)`:disabled?"rgba(255,255,255,0.03)":`linear-gradient(145deg,${colors.bg}55,${colors.bg}22)`,border:isSelected?"2px solid #FFD700":disabled?"1px solid rgba(255,255,255,0.06)":`1px solid ${colors.bg}88`,borderRadius:5,cursor:disabled?"not-allowed":"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",transition:"all 0.15s ease",opacity:disabled&&!isSelected?0.2:1,transform:isSelected?"scale(1.08) translateY(-2px)":"scale(1)",boxShadow:isSelected?`0 3px 12px ${colors.bg}99`:"none",position:"relative",overflow:"hidden"}}>
+                    {cnt>0&&<div style={{position:"absolute",top:1,right:2,fontSize:"clamp(5px,0.6vw,8px)",fontWeight:900,color:"#FFD700",lineHeight:1}}>×{cnt}</div>}
+                    <div style={{fontSize:"clamp(7px,1vw,11px)",fontWeight:900,lineHeight:1,color:isSelected?colors.text:disabled?"rgba(255,255,255,0.25)":"#fff"}}>{el.symbol}</div>
+                    <div style={{fontSize:"clamp(4px,0.5vw,7px)",opacity:0.7,textAlign:"center",lineHeight:1.1,color:isSelected?colors.text:disabled?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.7)",overflow:"hidden",maxWidth:"100%"}}>{el.name}</div>
                   </div>
                 );
               })
@@ -321,10 +395,7 @@ export default function App() {
 
           {/* Hover tooltip */}
           <div style={{marginTop:8,background:"rgba(255,255,255,0.06)",borderRadius:8,padding:"7px 12px",fontSize:9,minHeight:28,letterSpacing:0.5,transition:"opacity 0.2s",opacity:hoveredEl?1:0.3}}>
-            {hoveredEl
-              ? `${hoveredEl.name} (${hoveredEl.symbol}) · #${hoveredEl.atomicNumber} · ${GROUP_COLORS[hoveredEl.group]?.label} · Reactivity ${hoveredEl.reactivity}/10 · ${RARITY_LABELS[hoveredEl.rarity]}`
-              : "Hover over an element to see details"
-            }
+            {hoveredEl?`${hoveredEl.name} (${hoveredEl.symbol}) · #${hoveredEl.atomicNumber} · ${GROUP_COLORS[hoveredEl.group]?.label} · Reactivity ${hoveredEl.reactivity}/10 · ${RARITY_LABELS[hoveredEl.rarity]}`:"Hover over an element to see details"}
           </div>
         </div>
 
@@ -333,16 +404,14 @@ export default function App() {
 
           {/* Formula builder */}
           <div style={{width:"100%"}}>
-            <div style={{fontSize:9,letterSpacing:2,opacity:0.5,marginBottom:8,textAlign:"center"}}>
-              YOUR FORMULA ({selection.length}/6 atoms)
-            </div>
+            <div style={{fontSize:9,letterSpacing:2,opacity:0.5,marginBottom:8,textAlign:"center"}}>YOUR FORMULA ({selection.length}/6 atoms)</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:6,justifyContent:"center",minHeight:48,background:"rgba(255,255,255,0.04)",borderRadius:10,padding:8,border:"1px solid rgba(255,255,255,0.08)"}}>
               {selectedSymbols.length===0
                 ? <div style={{fontSize:9,opacity:0.3,letterSpacing:1,alignSelf:"center"}}>TAP ELEMENTS TO START</div>
                 : selectedSymbols.map(sym=>{
-                    const el = ELEMENTS.find(e=>e.symbol===sym);
-                    const colors = GROUP_COLORS[el?.group]||GROUP_COLORS.metal;
-                    const cnt = countOf(sym);
+                    const el=ELEMENTS.find(e=>e.symbol===sym);
+                    const colors=GROUP_COLORS[el?.group]||GROUP_COLORS.metal;
+                    const cnt=countOf(sym);
                     return (
                       <div key={sym} style={{display:"flex",alignItems:"center",gap:4,background:`linear-gradient(145deg,${colors.bg}cc,${colors.bg}88)`,borderRadius:8,padding:"4px 6px",border:"1px solid rgba(255,255,255,0.3)",animation:"float 2s ease-in-out infinite"}}>
                         <button onClick={()=>removeOne(sym)} style={{background:"rgba(0,0,0,0.3)",border:"none",color:"#fff",borderRadius:4,width:16,height:16,cursor:"pointer",fontSize:12,padding:0,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"monospace"}}>−</button>
@@ -356,11 +425,9 @@ export default function App() {
                   })
               }
             </div>
-            {noMatch && (
-              <div style={{marginTop:8,background:"rgba(255,107,107,0.15)",border:"1px solid rgba(255,107,107,0.4)",borderRadius:8,padding:"8px 10px",fontSize:9,color:"#FF6B6B",textAlign:"center",animation:"shake 0.3s ease",letterSpacing:0.5}}>
-                🤔 No compound found for this formula.<br/><span style={{opacity:0.7}}>Try adjusting the amounts!</span>
-              </div>
-            )}
+
+            {/* Clue box */}
+            {clue && <ClueBox clue={clue} />}
           </div>
 
           {/* Beaker */}
