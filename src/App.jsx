@@ -297,7 +297,7 @@ export default function App() {
   const countOf        = sym => selection.filter(s => s === sym).length;
 
   const addEl = (el) => {
-    if (result || selection.length >= 6) return;
+    if (result || countOf(el.symbol) >= 6) return;
     setSelection(p => [...p, el.symbol]);
     setClue(null);
   };
@@ -377,7 +377,7 @@ export default function App() {
                 const cnt=countOf(el.symbol);
                 const isSelected=cnt>0;
                 const isValid=validNext.has(el.symbol);
-                const disabled=!isValid||selection.length>=6||!!result;
+                const disabled=!isValid||countOf(el.symbol)>=6||!!result;
                 return (
                   <div key={`${row}-${col}`}
                     onClick={()=>!disabled&&addEl(el)}
@@ -404,7 +404,7 @@ export default function App() {
 
           {/* Formula builder */}
           <div style={{width:"100%"}}>
-            <div style={{fontSize:9,letterSpacing:2,opacity:0.5,marginBottom:8,textAlign:"center"}}>YOUR FORMULA ({selection.length}/6 atoms)</div>
+            <div style={{fontSize:9,letterSpacing:2,opacity:0.5,marginBottom:8,textAlign:"center"}}>YOUR FORMULA (max 6 of each)</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:6,justifyContent:"center",minHeight:48,background:"rgba(255,255,255,0.04)",borderRadius:10,padding:8,border:"1px solid rgba(255,255,255,0.08)"}}>
               {selectedSymbols.length===0
                 ? <div style={{fontSize:9,opacity:0.3,letterSpacing:1,alignSelf:"center"}}>TAP ELEMENTS TO START</div>
@@ -419,7 +419,7 @@ export default function App() {
                           <div style={{fontSize:14,fontWeight:900,color:colors.text,lineHeight:1}}>{sym}</div>
                           {cnt>1&&<div style={{fontSize:8,color:colors.text,opacity:0.8}}>×{cnt}</div>}
                         </div>
-                        <button onClick={()=>addEl(el)} disabled={selection.length>=6} style={{background:"rgba(0,0,0,0.3)",border:"none",color:"#fff",borderRadius:4,width:16,height:16,cursor:"pointer",fontSize:12,padding:0,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"monospace",opacity:selection.length>=6?0.3:1}}>+</button>
+                        <button onClick={()=>addEl(el)} disabled={countOf(sym)>=6} style={{background:"rgba(0,0,0,0.3)",border:"none",color:"#fff",borderRadius:4,width:16,height:16,cursor:"pointer",fontSize:12,padding:0,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"monospace",opacity:countOf(sym)>=6?0.3:1}}>+</button>
                       </div>
                     );
                   })
